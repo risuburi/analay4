@@ -1,0 +1,361 @@
+lay()">再生 [Space]</button>
+                        <button class="btn" onclick="stepFrame(-1)">◀ 1コマ戻る [,]</button>
+                        <button class="btn" onclick="stepFrame(1)">1コマ進む ▶ [.]</button>
+                        <select id="speedSelect" onchange="changeSpeed(this.value)">
+                            <option value="0.25">0.25x</option>
+                            <option value="0.5">0.5x</option>
+                            <option value="1" selected>1.0x (標準)</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="2">2.0x</option>
+                        </select>
+                    </div>
+
+                    <!-- ペン描画ツールパネル -->
+                    <div class="tool-panel">
+                        <button class="btn" id="drawModeBtn" onclick="toggleDrawMode()">✏️ 描画: OFF [C]</button>
+                        <select id="toolSelect" onchange="changeTool(this.value)">
+                            <option value="pen">フリーハンド</option>
+                            <option value="arrow">矢印 (パス/動線)</option>
+                            <option value="circle">円 (スポットライト)</option>
+                            <option value="rect">四角形</option>
+                            <option value="highlighter">マーカー</option>
+                        </select>
+                        <div class="color-picker">
+                            <div class="color-dot selected" style="background:#ef4444;" onclick="selectColor('#ef4444', this)"></div>
+                            <div class="color-dot" style="background:#3b82f6;" onclick="selectColor('#3b82f6', this)"></div>
+                            <div class="color-dot" style="background:#f59e0b;" onclick="selectColor('#f59e0b', this)"></div>
+                            <div class="color-dot" style="background:#ffffff;" onclick="selectColor('#ffffff', this)"></div>
+                        </div>
+                        <button class="btn" onclick="undoDraw()">↩️ 戻る</button>
+                        <button class="btn btn-danger" onclick="clearCanvas()">🗑️ クリア</button>
+                        <button class="btn btn-success" onclick="downloadSnapshot()">📸 静止画保存</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- サイドバー: タイムスタンプ & タグ -->
+        <div class="side-section">
+            <div class="side-header">
+                <span>📌 タイムスタンプリスト</span>
+                <span id="tsCount" style="color:#94a3b8; font-size:0.85rem;">0 件</span>
+            </div>
+
+            <!-- クイックタグボタン -->
+            <div class="quick-tags">
+                <button class="tag-btn tag-offense" onclick="addTimestamp('オフェンス')">赤: オフェンス [O]</button>
+                <button class="tag-btn tag-defense" onclick="addTimestamp('ディフェンス')">青: ディフェンス [D]</button>
+                <button class="tag-btn tag-3p" onclick="addTimestamp('3Pシュート')">緑: 3Pシュート [3]</button>
+                <button class="tag-btn tag-to" onclick="addTimestamp('TO / 課題')">黄: TO / 課題 [T]</button>
+            </div>
+
+            <!-- タイムスタンプ一覧 -->
+            <div class="timestamp-list" id="timestampList">
+                <!-- Javascriptでカードが追加されます -->
+            </div>
+
+            <div class="shortcuts-info">
+                <strong>⌨️ キーボードショートカット</strong><br>
+                [Space] 再生/停止 | [,] [.] コマ送り<br>
+                [C] 描画切り替え | [O] オフェンス | [D] ディフェンス | [3] 3P | [T] TO
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('videoPlayer');
+        const canvas = document.getElementById('drawCanvas');
+        const ctx = canvas.getContext('2d');
+        const stage = document.getElementById('stageContainer');
+        const dropOverlay = document.getElementById('dropOverlay');
+        const seekBar = document.getElementById('seekBar');
+        const timeDisplay = document.getElementById('timeDisplay');
+        const playBtn = document.getElementById('playBtn');
+        const drawModeBtn = document.getElementById('drawModeBtn');
+        const timestampList = document.getElementById('timestampList');
+
+        let isDrawMode = false;
+        let isDrawing = false;
+        let startX = 0, startY = 0;
+        let currentColor = '#ef4444';
+        let currentTool = 'pen';
+        let drawHistory = [];
+        let timestamps = [];
+
+        // ドラッグ＆ドロップ対応
+        stage.addEventListener('dragover', (e) => { e.preventDefault(); });
+        stage.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length > 0) {
+                loadVideo(e.dataTransfer.files[0]);
+            }
+        });
+
+        function loadVideo(file) {
+            if (!file) return;
+            const url = URL.createObjectURL(file);
+            video.src = url;
+            dropOverlay.classList.add('hidden');
+            video.onloadedmetadata = () => {
+                seekBar.max = video.duration;
+                updateTimeDisplay();
+                resizeCanvas();
+            };
+        }
+
+        function resizeCanvas() {
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+            canvas.style.left = video.offsetLeft + 'px';
+            canvas.style.top = video.offsetTop + 'px';
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        // 動画再生コントロール
+        function togglePlay() {
+            if (video.paused) {
+                if (isDrawMode) toggleDrawMode(); // 再生時は描画モードOFF
+                video.play();
+                playBtn.innerText = '停止 [Space]';
+            } else {
+                video.pause();
+                playBtn.innerText = '再生 [Space]';
+            }
+        }
+
+        video.addEventListener('timeupdate', () => {
+            seekBar.value = video.currentTime;
+            updateTimeDisplay();
+        });
+
+        function seekVideo(val) {
+            video.currentTime = val;
+            updateTimeDisplay();
+        }
+
+        function stepFrame(delta) {
+            video.pause();
+            playBtn.innerText = '再生 [Space]';
+            video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + (delta * 0.033)));
+        }
+
+        function changeSpeed(val) {
+            video.playbackRate = parseFloat(val);
+        }
+
+        function updateTimeDisplay() {
+            const cur = formatTime(video.currentTime);
+            const dur = formatTime(video.duration || 0);
+            timeDisplay.innerText = `${cur} / ${dur}`;
+        }
+
+        function formatTime(sec) {
+            const m = Math.floor(sec / 60).toString().padStart(2, '0');
+            const s = Math.floor(sec % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
+        // 描画機能
+        function toggleDrawMode() {
+            isDrawMode = !isDrawMode;
+            if (isDrawMode) {
+                video.pause();
+                playBtn.innerText = '再生 [Space]';
+                drawModeBtn.classList.add('btn-active');
+                drawModeBtn.innerText = '✏️ 描画: ON [C]';
+                resizeCanvas();
+                saveCanvasState();
+            } else {
+                drawModeBtn.classList.remove('btn-active');
+                drawModeBtn.innerText = '✏️ 描画: OFF [C]';
+            }
+        }
+
+        function changeTool(tool) { currentTool = tool; }
+        function selectColor(color, el) {
+            currentColor = color;
+            document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('selected'));
+            el.classList.add('selected');
+        }
+
+        function saveCanvasState() {
+            drawHistory.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+            if (drawHistory.length > 20) drawHistory.shift();
+        }
+
+        function undoDraw() {
+            if (drawHistory.length > 0) {
+                const state = drawHistory.pop();
+                ctx.putImageData(state, 0, 0);
+            }
+        }
+
+        function clearCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawHistory = [];
+        }
+
+        // Pointer Event (タッチ・ペン・マウス共通)
+        canvas.addEventListener('pointerdown', (e) => {
+            if (!isDrawMode) return;
+            isDrawing = true;
+            saveCanvasState();
+            const rect = canvas.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+
+            ctx.strokeStyle = currentColor;
+            ctx.fillStyle = currentColor;
+            ctx.lineWidth = currentTool === 'highlighter' ? 14 : 4;
+            ctx.globalAlpha = currentTool === 'highlighter' ? 0.4 : 1.0;
+            ctx.lineCap = 'round';
+
+            if (currentTool === 'pen' || currentTool === 'highlighter') {
+                ctx.beginPath();
+                ctx.moveTo(startX, startY);
+            }
+        });
+
+        canvas.addEventListener('pointermove', (e) => {
+            if (!isDrawing || !isDrawMode) return;
+            const rect = canvas.getBoundingClientRect();
+            const curX = e.clientX - rect.left;
+            const curY = e.clientY - rect.top;
+
+            if (currentTool === 'pen' || currentTool === 'highlighter') {
+                ctx.lineTo(curX, curY);
+                ctx.stroke();
+            } else {
+                // 図形プレビュー描画（最後の状態に戻してから描画）
+                if (drawHistory.length > 0) {
+                    ctx.putImageData(drawHistory[drawHistory.length - 1], 0, 0);
+                } else {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+
+                ctx.beginPath();
+                if (currentTool === 'arrow') {
+                    drawArrow(startX, startY, curX, curY);
+                } else if (currentTool === 'circle') {
+                    const radius = Math.hypot(curX - startX, curY - startY);
+                    ctx.arc(startX, startY, radius, 0, Math.PI * 2);
+                    ctx.stroke();
+                } else if (currentTool === 'rect') {
+                    ctx.strokeRect(startX, startY, curX - startX, curY - startY);
+                }
+            }
+        });
+
+        canvas.addEventListener('pointerup', () => { isDrawing = false; });
+        canvas.addEventListener('pointercancel', () => { isDrawing = false; });
+
+        function drawArrow(fromX, fromY, toX, toY) {
+            const headlen = 12;
+            const angle = Math.atan2(toY - fromY, toX - fromX);
+            ctx.moveTo(fromX, fromY);
+            ctx.lineTo(toX, toY);
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(toX, toY);
+            ctx.lineTo(toX - headlen * Math.cos(angle - Math.PI / 6), toY - headlen * Math.sin(angle - Math.PI / 6));
+            ctx.lineTo(toX - headlen * Math.cos(angle + Math.PI / 6), toY - headlen * Math.sin(angle + Math.PI / 6));
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // 静止画キャプチャ保存
+        function downloadSnapshot() {
+            const mergeCanvas = document.createElement('canvas');
+            mergeCanvas.width = video.videoWidth || 1280;
+            mergeCanvas.height = video.videoHeight || 720;
+            const mCtx = mergeCanvas.getContext('2d');
+
+            mCtx.drawImage(video, 0, 0, mergeCanvas.width, mergeCanvas.height);
+            mCtx.drawImage(canvas, 0, 0, mergeCanvas.width, mergeCanvas.height);
+
+            const a = document.createElement('a');
+            a.download = `basketball_analysis_${formatTime(video.currentTime).replace(':', '-')}.png`;
+            a.href = mergeCanvas.toDataURL('image/png');
+            a.click();
+        }
+
+        // タイムスタンプ管理
+        function addTimestamp(tag) {
+            const time = video.currentTime;
+            timestamps.push({ id: Date.now(), time, tag, memo: '' });
+            timestamps.sort((a, b) => a.time - b.time);
+            renderTimestamps();
+        }
+
+        function renderTimestamps() {
+            timestampList.innerHTML = '';
+            document.getElementById('tsCount').innerText = `${timestamps.length} 件`;
+
+            timestamps.forEach((ts) => {
+                const card = document.createElement('div');
+                card.className = 'timestamp-card';
+
+                let badgeClass = 'tag-offense';
+                if (ts.tag.includes('ディフェンス')) badgeClass = 'tag-defense';
+                if (ts.tag.includes('3P')) badgeClass = 'tag-3p';
+                if (ts.tag.includes('TO')) badgeClass = 'tag-to';
+
+                card.innerHTML = `
+                    <div class="ts-header">
+                        <span class="ts-time" onclick="seekVideo(${ts.time})">⏱️ ${formatTime(ts.time)}</span>
+                        <span class="ts-badge ${badgeClass}">${ts.tag}</span>
+                    </div>
+                    <input type="text" class="ts-input" placeholder="メモを入力..." value="${ts.memo}" onchange="updateMemo(${ts.id}, this.value)">
+                    <div class="ts-actions">
+                        <button class="btn btn-danger" style="padding:2px 8px; font-size:0.75rem;" onclick="deleteTimestamp(${ts.id})">削除</button>
+                    </div>
+                `;
+                timestampList.appendChild(card);
+            });
+        }
+
+        function updateMemo(id, val) {
+            const item = timestamps.find(t => t.id === id);
+            if (item) item.memo = val;
+        }
+
+        function deleteTimestamp(id) {
+            timestamps = timestamps.filter(t => t.id !== id);
+            renderTimestamps();
+        }
+
+        // データ書き出し/読み込み (JSON)
+        function exportData() {
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(timestamps, null, 2));
+            const a = document.createElement('a');
+            a.href = dataStr;
+            a.download = "basketball_analysis_data.json";
+            a.click();
+        }
+
+        function importData(file) {
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                timestamps = JSON.parse(e.target.result);
+                renderTimestamps();
+            };
+            reader.readAsText(file);
+        }
+
+        // キーボードショートカット
+        window.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+            if (e.key === ',') stepFrame(-1);
+            if (e.key === '.') stepFrame(1);
+            if (e.key === 'c' || e.key === 'C') toggleDrawMode();
+            if (e.key === 'o' || e.key === 'O') addTimestamp('オフェンス');
+            if (e.key === 'd' || e.key === 'D') addTimestamp('ディフェンス');
+            if (e.key === '3') addTimestamp('3Pシュート');
+            if (e.key === 't' || e.key === 'T') addTimestamp('TO / 課題');
+        });
+    </script>
+</body>
+</html>
